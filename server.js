@@ -25,7 +25,7 @@ function getVideoHeaders(host, url) {
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Dest': 'iframe',
         'Referer': 'https://3isk.onl/',
-        'Accept-Encoding': 'gzip, deflate, br, zstd',
+
         'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,ar;q=0.7',
         'Connection': 'close'
     };
