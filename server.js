@@ -25,7 +25,7 @@ function getVideoHeaders(host, url) {
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Dest': 'iframe',
         'Referer': 'https://3isk.onl/',
-
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,ar;q=0.7',
         'Connection': 'close'
     };
@@ -110,24 +110,67 @@ function enhanceVideoContent(content, originalUrl) {
     $('.overdiv:contains("Disable ADBlock")').remove();
     $('script[src*="bvtpk.com"]').remove();
     
-    // Remove specific ad scripts while preserving video functionality
+    // Fix broken resource paths by serving them locally or using CDN
+    $('link[href^="/css/"]').each(function() {
+        $(this).remove(); // Remove broken CSS links
+    });
+    
+    $('script[src^="/js/"]').each(function() {
+        const src = $(this).attr('src');
+        if (src.includes('jquery.min.js')) {
+            $(this).attr('src', 'https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js');
+        } else if (src.includes('jquery.cookie.js')) {
+            $(this).attr('src', 'https://cdnjs.cloudflare.com/ajax/libs/jquery-cookie/1.4.1/jquery.cookie.min.js');
+        } else {
+            $(this).remove(); // Remove other broken scripts
+        }
+    });
+    
+    // Fix JWPlayer script path
+    $('script[src^="/player/jw8/jwplayer.js"]').attr('src', 'https://cdnjs.cloudflare.com/ajax/libs/jwplayer/8.24.0/jwplayer.js');
+    
+    // Remove ad scripts while preserving video functionality
     $('script').each(function() {
+        const src = $(this).attr('src');
         const scriptContent = $(this).html();
+        
+        if (src && (
+            src.includes('bvtpk.com') ||
+            src.includes('pteefoagha.com') ||
+            src.includes('ccg90.com') ||
+            src.includes('rtmark.net') ||
+            src.includes('tzegilo.com')
+        )) {
+            $(this).remove();
+            return;
+        }
+        
         if (scriptContent && (
             scriptContent.includes('bvtpk.com') ||
             scriptContent.includes('popunder') ||
+            scriptContent.includes('pteefoagha') ||
             (scriptContent.includes('adb') && !scriptContent.includes('jwplayer'))
         )) {
             $(this).remove();
         }
     });
     
-    // Add bypass scripts
+    // Add bypass scripts with jQuery and JWPlayer fix
     const bypassScript = `
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jwplayer/8.24.0/jwplayer.js"></script>
     <script>
-    // 🛡️ ULTIMATE ADBLOCK BYPASS
+    // 🛡️ ULTIMATE ADBLOCK BYPASS WITH DEPENDENCIES
     (function() {
         console.log("🛡️ Node.js ADBlock Bypass Loading...");
+        
+        // Set JWPlayer key if needed
+        if (window.jwplayer) {
+            try {
+                jwplayer.key = "ITWMv7t88JGzI0xPwW8I0+LveiXX9SWbfdmt0ArUSyc=";
+            } catch(e) {}
+        }
         
         // Override detection variables
         window.adblock = false;
@@ -164,10 +207,25 @@ function enhanceVideoContent(content, originalUrl) {
         window.detectAdBlock = () => false;
         window.showAdbMessage = () => {};
         
-        // Block popups
+        // Block popups and ads
         window.open = (url, name, features) => {
             console.log("🚫 Popup blocked:", url);
             return { close: () => {}, focus: () => {} };
+        };
+        
+        // Override fetch to block ad requests
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options) {
+            if (typeof url === 'string' && (
+                url.includes('pteefoagha.com') ||
+                url.includes('ccg90.com') ||
+                url.includes('rtmark.net') ||
+                url.includes('tzegilo.com')
+            )) {
+                console.log("🚫 Blocked ad fetch:", url);
+                return Promise.reject(new Error('Blocked'));
+            }
+            return originalFetch.apply(this, arguments);
         };
         
         // Hide ADBlock messages
@@ -198,22 +256,26 @@ function enhanceVideoContent(content, originalUrl) {
                 console.log("📺 Forced video player visible");
             }
             
-            // Handle JWPlayer when available
-            if (window.jwplayer && document.querySelector("#vplayer")) {
-                setTimeout(() => {
+            // Handle JWPlayer when available - wait for it to load
+            setTimeout(() => {
+                if (window.jwplayer && document.querySelector("#vplayer")) {
                     try {
                         const jwp = jwplayer("vplayer");
-                        if (jwp) {
+                        if (jwp && jwp.getState) {
                             jwp.on("ready", () => {
                                 console.log("🎯 JWPlayer ready and playing");
-                                jwp.play();
+                                setTimeout(() => jwp.play(), 1000);
+                            });
+                            
+                            jwp.on("error", (e) => {
+                                console.log("JWPlayer error:", e);
                             });
                         }
                     } catch(e) {
-                        console.log("JWPlayer setup:", e.message);
+                        console.log("JWPlayer setup error:", e.message);
                     }
-                }, 2000);
-            }
+                }
+            }, 3000);
         }
         
         // Run enhancements
@@ -232,11 +294,29 @@ function enhanceVideoContent(content, originalUrl) {
             console.log("👤 Set legitimate user cookies");
         }, 1000);
         
+        // Wait for jQuery then set cookies properly
+        function waitForJQuery() {
+            if (window.$ && window.$.cookie) {
+                try {
+                    $.cookie('file_id', '386532', { expires: 10 });
+                    $.cookie('aff', '20', { expires: 10 });
+                    $.cookie('ref_url', '3isk.onl', { expires: 10 });
+                    console.log("🍪 Set jQuery cookies");
+                } catch(e) {
+                    console.log("Cookie setting error:", e);
+                }
+            } else {
+                setTimeout(waitForJQuery, 500);
+            }
+        }
+        
+        waitForJQuery();
+        
         console.log("✅ Node.js ADBlock bypass activated");
     })();
     </script>`;
     
-    // Enhanced CSS
+    // Enhanced CSS with ad blocking
     const enhancedCSS = `
     <style>
     /* Hide ADBlock detection elements */
@@ -246,6 +326,18 @@ function enhanceVideoContent(content, originalUrl) {
         opacity: 0 !important;
         height: 0 !important;
         overflow: hidden !important;
+    }
+    
+    /* Block ad iframes and scripts */
+    iframe[src*="pteefoagha.com"],
+    iframe[src*="ccg90.com"],
+    iframe[src*="rtmark.net"],
+    iframe[src*="tzegilo.com"],
+    script[src*="pteefoagha.com"],
+    script[src*="ccg90.com"],
+    script[src*="rtmark.net"],
+    script[src*="tzegilo.com"] {
+        display: none !important;
     }
     
     /* Ensure video player is visible */
@@ -280,6 +372,12 @@ function enhanceVideoContent(content, originalUrl) {
     
     /* Hide promotional elements */
     .social-box, .copy, a[href*="premium.html"] {
+        display: none !important;
+    }
+    
+    /* Block Cloudflare challenge scripts */
+    script[src*="/cdn-cgi/"],
+    script[src*="challenge-platform"] {
         display: none !important;
     }
     </style>`;
