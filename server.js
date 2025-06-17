@@ -2,17 +2,55 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
-// Middleware to handle CORS
+// Trust proxy for Railway deployment
+app.set('trust proxy', true);
+
+// Enhanced CORS and security middleware for Railway
 app.use((req, res, next) => {
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.header('Access-Control-Allow-Headers', '*');
+        res.header('Access-Control-Max-Age', '86400');
+        return res.sendStatus(200);
+    }
+    
+    // Set CORS headers for all requests
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    res.header('Access-Control-Allow-Headers', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Expose-Headers', '*');
+    
+    // Security headers
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header('X-Frame-Options', 'SAMEORIGIN');
+    res.header('Referrer-Policy', 'no-referrer-when-downgrade');
+    
+    // Log request for debugging
+    console.log(`📥 ${req.method} ${req.url} | IP: ${req.ip} | User-Agent: ${req.get('User-Agent')?.slice(0, 50)}...`);
+    
     next();
 });
 
+// Middleware to parse custom headers from users
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Health check endpoint for Railway
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development',
+        port: port
+    });
+});
+
 // Function to create proper headers for video hosts
-function getVideoHeaders(host, url) {
+function getVideoHeaders(host, url, customHeaders = {}) {
     const baseHeaders = {
         'Host': host,
         'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
@@ -25,9 +63,13 @@ function getVideoHeaders(host, url) {
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Dest': 'iframe',
         'Referer': 'https://3isk.onl/',
+        
         'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,ar;q=0.7',
         'Connection': 'close'
     };
+
+    // Merge custom headers from user (if any)
+    const mergedHeaders = { ...baseHeaders, ...customHeaders };
 
     // Video hosting domains that need Cloudflare cookie
     const videoHosts = ['miravd.com', 'mwdy.cc', 'vidroba.com', 'streamtape.com', 'doodstream.com', 'streamwish.com'];
@@ -35,38 +77,71 @@ function getVideoHeaders(host, url) {
     if (videoHosts.some(vh => host.includes(vh))) {
         // Generate Cloudflare clearance cookie for video hosts
         const timestamp = Math.floor(Date.now() / 1000);
-        baseHeaders['Cookie'] = `cf_clearance=ZYvGjWD614gjjWzzaHcAcgTwSH0CNtIjnamT..CIhso-${timestamp}-1.2.1.1-PuAT98NFZLgoUfLXNMtOem5MWcbsPS9a_UM41_nzNHoT70td41BfST4dZXpJm_5SFx_bRKahIshzCJ3ShnyRbJ0SgEk8mcDFL18cfb6Mch4V1hONV0wlHCKhHVqH7VU4IU30hwtdhZdeXQuu2__ffCzuVPgF7UUfHKtP.He0ntIkroHkt6GUvUmoSnmZ6bJBdw14Y5yiYiF.NCcLwDOFVgRz.mKGGVVNXvWF1fXMwwszaqEEGEfwa9CE9MuNoHJBRtcnpvD.ls0hJaKZwO5P.6ZhGeFJrGQgvydUzY1IzQnL0pbiF5ZMq81H_qzDx.reodNgne9whLX9Feu81ox2pOf6JGJyEVSlgCbB64aLPBg; adb_detection=false; legitimate_user=true`;
+        mergedHeaders['Cookie'] = `cf_clearance=ZYvGjWD614gjjWzzaHcAcgTwSH0CNtIjnamT..CIhso-${timestamp}-1.2.1.1-PuAT98NFZLgoUfLXNMtOem5MWcbsPS9a_UM41_nzNHoT70td41BfST4dZXpJm_5SFx_bRKahIshzCJ3ShnyRbJ0SgEk8mcDFL18cfb6Mch4V1hONV0wlHCKhHVqH7VU4IU30hwtdhZdeXQuu2__ffCzuVPgF7UUfHKtP.He0ntIkroHkt6GUvUmoSnmZ6bJBdw14Y5yiYiF.NCcLwDOFVgRz.mKGGVVNXvWF1fXMwwszaqEEGEfwa9CE9MuNoHJBRtcnpvD.ls0hJaKZwO5P.6ZhGeFJrGQgvydUzY1IzQnL0pbiF5ZMq81H_qzDx.reodNgne9whLX9Feu81ox2pOf6JGJyEVSlgCbB64aLPBg; adb_detection=false; legitimate_user=true`;
         console.log(`🍪 Using Cloudflare cookie for: ${host}`);
     }
 
-    return baseHeaders;
+    return mergedHeaders;
 }
 
-// Function to fetch content with proper headers
-async function fetchWithHeaders(url) {
+// Function to fetch content with proper headers and error handling
+async function fetchWithHeaders(url, customHeaders = {}) {
     try {
         const urlObj = new URL(url);
         const host = urlObj.hostname;
-        const headers = getVideoHeaders(host, url);
+        const headers = getVideoHeaders(host, url, customHeaders);
         
         console.log(`📡 Fetching: ${url}`);
         console.log(`🏠 Host: ${host}`);
         
-        const response = await axios.get(url, {
+        // Enhanced axios config for Railway deployment
+        const config = {
             headers,
             timeout: 30000,
             maxRedirects: 5,
+            maxContentLength: 50 * 1024 * 1024, // 50MB limit
+            maxBodyLength: 50 * 1024 * 1024,
             validateStatus: function (status) {
-                return status < 400; // Accept any status less than 400
-            }
-        });
+                return status < 500; // Accept any status less than 500
+            },
+            // Important for Railway: handle proxy and SSL
+            httpAgent: false,
+            httpsAgent: false,
+            proxy: false
+        };
         
-        console.log(`✅ Status: ${response.status}`);
+        const response = await axios.get(url, config);
+        
+        console.log(`✅ Status: ${response.status} | Size: ${response.data?.length || 0} bytes`);
+        
+        if (response.status >= 400) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText || 'Unknown error'}`);
+        }
+        
         return response.data;
         
     } catch (error) {
-        console.error(`❌ Error fetching ${url}:`, error.message);
-        throw error;
+        console.error(`❌ Error fetching ${url}:`, {
+            message: error.message,
+            code: error.code,
+            status: error.response?.status,
+            statusText: error.response?.statusText
+        });
+        
+        // Provide more specific error messages
+        if (error.code === 'ENOTFOUND') {
+            throw new Error(`Network error: Cannot resolve hostname. Check your network settings.`);
+        } else if (error.code === 'ECONNREFUSED') {
+            throw new Error(`Connection refused. The target server may be down.`);
+        } else if (error.code === 'ETIMEDOUT') {
+            throw new Error(`Request timeout. The server took too long to respond.`);
+        } else if (error.response?.status === 403) {
+            throw new Error(`Access forbidden. The server blocked this request.`);
+        } else if (error.response?.status === 404) {
+            throw new Error(`Video not found. The requested video may have been removed.`);
+        } else {
+            throw new Error(`Fetch error: ${error.message}`);
+        }
     }
 }
 
@@ -392,15 +467,29 @@ function enhanceVideoContent(content, originalUrl) {
     return $.html();
 }
 
-// Main route to handle video requests
+// Main route to handle video requests with custom headers support
 app.get('/video', async (req, res) => {
     try {
         const videoUrl = req.query.url || 'https://3isk.onl/embed/1/193981/1/';
         console.log(`\n🎬 === Processing Video Request ===`);
         console.log(`📺 URL: ${videoUrl}`);
+        console.log(`🌐 Client IP: ${req.ip}`);
+        console.log(`📱 User Agent: ${req.get('User-Agent')?.slice(0, 100)}...`);
+        
+        // Extract custom headers from query params or request headers
+        const customHeaders = {};
+        
+        // Allow users to pass custom headers via query params
+        Object.keys(req.query).forEach(key => {
+            if (key.startsWith('header_')) {
+                const headerName = key.replace('header_', '').replace(/_/g, '-');
+                customHeaders[headerName] = req.query[key];
+                console.log(`🔧 Custom header: ${headerName} = ${req.query[key]}`);
+            }
+        });
         
         // Step 1: Fetch main page
-        const mainContent = await fetchWithHeaders(videoUrl);
+        const mainContent = await fetchWithHeaders(videoUrl, customHeaders);
         
         // Step 2: Extract iframe URL
         const iframeUrl = extractIframeUrl(mainContent);
@@ -409,15 +498,17 @@ app.get('/video', async (req, res) => {
             console.log(`🎯 Found iframe, fetching: ${iframeUrl}`);
             
             // Step 3: Fetch iframe content
-            const videoContent = await fetchWithHeaders(iframeUrl);
+            const videoContent = await fetchWithHeaders(iframeUrl, customHeaders);
             
             // Step 4: Enhance and bypass detection
             const enhancedContent = enhanceVideoContent(videoContent, iframeUrl);
             
-            // Step 5: Send enhanced content
+            // Step 5: Send enhanced content with proper headers for Railway
             res.setHeader('Content-Type', 'text/html; charset=UTF-8');
             res.setHeader('X-Frame-Options', 'SAMEORIGIN');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
             
             res.send(enhancedContent);
             console.log(`✅ Successfully served enhanced video content`);
@@ -430,44 +521,87 @@ app.get('/video', async (req, res) => {
         }
         
     } catch (error) {
-        console.error(`❌ Error processing video:`, error.message);
+        console.error(`❌ Error processing video:`, {
+            message: error.message,
+            stack: error.stack?.split('\n')[0]
+        });
         
+        // Enhanced error page for Railway deployment
         res.status(500).send(`
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Video Server Error</title>
+            <title>Video Proxy Error</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
                 body { 
-                    font-family: Arial; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                    color: white; text-align: center; padding: 50px; margin: 0; 
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    color: white; text-align: center; padding: 20px; margin: 0; 
+                    min-height: 100vh; display: flex; align-items: center; justify-content: center;
                 }
                 .error { 
-                    background: rgba(0,0,0,0.8); padding: 40px; border-radius: 15px; 
-                    display: inline-block; max-width: 600px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); 
+                    background: rgba(0,0,0,0.8); padding: 30px; border-radius: 15px; 
+                    max-width: 600px; width: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.5); 
                 }
                 .btn { 
-                    background: #4CAF50; color: white; border: none; padding: 12px 25px; 
-                    margin: 10px; border-radius: 8px; cursor: pointer; text-decoration: none; 
-                    display: inline-block; transition: all 0.3s; 
+                    background: #4CAF50; color: white; border: none; padding: 12px 20px; 
+                    margin: 8px; border-radius: 8px; cursor: pointer; text-decoration: none; 
+                    display: inline-block; transition: all 0.3s; font-size: 14px;
                 }
                 .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+                .error-details { 
+                    background: rgba(255,0,0,0.1); padding: 15px; margin: 15px 0; 
+                    border-radius: 8px; border-left: 4px solid #ff4757; text-align: left; 
+                }
+                .help-section { 
+                    background: rgba(255,255,255,0.1); padding: 15px; margin: 15px 0; 
+                    border-radius: 8px; text-align: left; 
+                }
+                code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; }
+                @media (max-width: 600px) {
+                    .error { padding: 20px; margin: 10px; }
+                    .btn { display: block; margin: 10px 0; }
+                }
             </style>
         </head>
         <body>
             <div class="error">
-                <h2>🛡️ Node.js Video Server Error</h2>
-                <p><strong>Error:</strong> ${error.message}</p>
-                <p><strong>URL:</strong> ${req.query.url || 'Default video URL'}</p>
+                <h2>🛡️ Video Proxy Server Error</h2>
+                
+                <div class="error-details">
+                    <strong>❌ Error:</strong> ${error.message}<br>
+                    <strong>🔗 URL:</strong> ${req.query.url || 'Default video URL'}<br>
+                    <strong>🌐 Server:</strong> Railway Deployment<br>
+                    <strong>⏰ Time:</strong> ${new Date().toISOString()}
+                </div>
+                
+                <div class="help-section">
+                    <h3>🔧 Common Solutions:</h3>
+                    <ul>
+                        <li><strong>Network Settings:</strong> Check if your network allows outbound connections</li>
+                        <li><strong>URL Format:</strong> Ensure the video URL is valid and accessible</li>
+                        <li><strong>Custom Headers:</strong> Try adding custom headers using <code>header_*</code> parameters</li>
+                        <li><strong>Server Location:</strong> The target video server might be blocking Railway's IP range</li>
+                    </ul>
+                </div>
                 
                 <div style="margin: 20px 0;">
-                    <h3>🧪 Try These URLs:</h3>
-                    <a href="/video?url=https://3isk.onl/embed/1/193981/1/" class="btn">🎬 Server 1</a><br>
-                    <a href="/video?url=https://3isk.onl/embed/2/193981/1/" class="btn">🎬 Server 2</a><br>
+                    <h3>🧪 Try Alternative URLs:</h3>
+                    <a href="/video?url=https://3isk.onl/embed/1/193981/1/" class="btn">🎬 Server 1</a>
+                    <a href="/video?url=https://3isk.onl/embed/2/193981/1/" class="btn">🎬 Server 2</a>
                     <a href="/video?url=https://3isk.onl/embed/3/193981/1/" class="btn">🎬 Server 3</a>
                 </div>
                 
-                <button class="btn" onclick="location.reload()">🔄 Retry</button>
+                <div>
+                    <button class="btn" onclick="location.reload()">🔄 Retry</button>
+                    <a href="/" class="btn">🏠 Home</a>
+                    <a href="/health" class="btn">🩺 Health Check</a>
+                </div>
+                
+                <div style="margin-top: 20px; font-size: 12px; color: #ccc;">
+                    Railway Video Proxy | Node.js ${process.version}
+                </div>
             </div>
         </body>
         </html>`);
@@ -534,14 +668,28 @@ app.get('/', (req, res) => {
     </html>`);
 });
 
-// Start server
-app.listen(port, () => {
+// Start server with Railway-compatible settings
+app.listen(port, '0.0.0.0', () => {
     console.log(`\n🎬 =======================================`);
-    console.log(`🚀 Node.js Video Proxy Server STARTED`);
-    console.log(`🌐 Server: http://localhost:${port}`);
-    console.log(`🎯 Test URL: http://localhost:${port}/video?url=https://3isk.onl/embed/1/193981/1/`);
-    console.log(`🛡️ Features: ADBlock bypass, Cloudflare cookies, proper headers`);
+    console.log(`🚀 Video Proxy Server STARTED`);
+    console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🚢 Platform: ${process.env.RAILWAY_ENVIRONMENT || 'local'}`);
+    console.log(`🔗 Server: ${process.env.RAILWAY_PUBLIC_DOMAIN || `http://localhost:${port}`}`);
+    console.log(`🎯 Test: ${process.env.RAILWAY_PUBLIC_DOMAIN || `http://localhost:${port}`}/video?url=https://3isk.onl/embed/1/193981/1/`);
+    console.log(`🛡️ Features: CORS, Custom Headers, ADBlock Bypass, Cloudflare Support`);
+    console.log(`📡 Health Check: ${process.env.RAILWAY_PUBLIC_DOMAIN || `http://localhost:${port}`}/health`);
     console.log(`🎬 =======================================\n`);
+});
+
+// Graceful shutdown for Railway
+process.on('SIGTERM', () => {
+    console.log('🛑 SIGTERM received, shutting down gracefully');
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('🛑 SIGINT received, shutting down gracefully');
+    process.exit(0);
 });
 
 module.exports = app;
